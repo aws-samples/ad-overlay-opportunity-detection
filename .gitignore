@@ -1,0 +1,3 @@
+*.pyc
+.aws-sam/*
+.vscode/*
