@@ -65,7 +65,7 @@ class AdOpportunites:
             self.text_shown_segments.insert(0, {'start': 0, 'end': 0})
 
         # calculate the slots
-        for segment_number in range(0, len(self.text_shown_segments) - 2):
+        for segment_number in range(0, len(self.text_shown_segments) - 1):
             last_segment_end = self.text_shown_segments[segment_number]['end']
             next_segment_start = self.text_shown_segments[segment_number + 1]['start']
             # add 1 second padding to the end of one and the start of the next, since
