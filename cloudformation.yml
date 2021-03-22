@@ -1,0 +1,213 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+
+# Permission is hereby granted, free of charge, to any person obtaining a copy of
+# this software and associated documentation files (the "Software"), to deal in
+# the Software without restriction, including without limitation the rights to
+# use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+# the Software, and to permit persons to whom the Software is furnished to do so.
+
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+# FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+# COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+# IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+# CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Infrastructure needed for sample code that finds opportunities for overlay advertisements in video
+
+Globals:
+  Function:
+    Runtime: python3.8
+
+Parameters:
+  ProcessingTimeLimit:
+    Type: Number
+    Default: 900
+    MinValue: 60
+    MaxValue: 900
+    Description: Number of seconds to allow for processing of results in lambda
+
+Resources:
+  #######################
+  # ROLES
+  #######################
+  RekognitionLambdaRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: "sts:AssumeRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AmazonRekognitionFullAccess
+      Policies:
+        - PolicyName: PassRoleToRek
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+            - Effect: Allow
+              Action:
+              - iam:PassRole
+              Resource: "*"
+
+  RoleForRekognition:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: rekognition.amazonaws.com
+            Action: "sts:AssumeRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSNSFullAccess
+
+  ResultsProcessorLambdaRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: "sts:AssumeRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/AmazonRekognitionFullAccess
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AmazonSQSFullAccess
+
+  #####################################################################
+  # SNS Topic and SQS Queue that are used to signal completion by Rek
+  #####################################################################
+  RekognitionDoneQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout:
+        Ref: ProcessingTimeLimit
+
+  RekognitionDoneTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+       DisplayName: "RekCompleteNotifications"
+
+  QueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref RekognitionDoneQueue
+      PolicyDocument:
+        Statement:
+          Effect: Allow
+          Principal: "*"
+          Action: "sqs:*"
+          Resource: "*"
+          Condition:
+            ArnEquals:
+              "aws:SourceArn": !Ref RekognitionDoneTopic
+
+  SNSTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref RekognitionDoneTopic
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: rekognition.amazonaws.com
+          Action: "sns:Publish"
+          Resource: !Ref RekognitionDoneTopic
+
+  myQueueToSnsSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Endpoint: !GetAtt RekognitionDoneQueue.Arn
+      Protocol: sqs
+      RawMessageDelivery: true
+      TopicArn: !Ref RekognitionDoneTopic
+
+  #############################################################################
+  # Lambda that calls Rekognition
+  #############################################################################
+  RekognitionCallerLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/rekognition_call
+      Handler: main.lambda_handler
+      Role: !GetAtt RekognitionLambdaRole.Arn
+      Environment:
+        Variables:
+          SNS_TOPIC_ARN: !Ref RekognitionDoneTopic
+          IAM_ROLE_ARN: !GetAtt RoleForRekognition.Arn
+          TEXT_SEARCH_LEFT: 0.2
+          TEXT_SEARCH_TOP: 0.8
+          TEXT_SEARCH_WIDTH: 0.7
+          TEXT_SEARCH_HEIGHT: 0.15
+          MIN_WORD_DETECT_CONFIDENCE: 90
+      Events:
+        OnNewFileEvent:
+          Type: S3
+          Properties:
+            Bucket: !Ref InboundVideoBucket
+            Events: s3:ObjectCreated:*
+
+  #############################################################################
+  # Lambda that processes results from Rekognition
+  #############################################################################
+  ResultsProcessorLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/process_results
+      Handler: main.lambda_handler
+      Role: !GetAtt ResultsProcessorLambdaRole.Arn
+      Environment:
+        Variables:
+          MIN_AD_DURATION_IN_SECS: 15
+          MIN_WORD_WIDTH: 0.05
+      Timeout:
+        Ref: ProcessingTimeLimit
+      MemorySize: 1024
+      Events:
+        SqsJobQueue:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt RekognitionDoneQueue.Arn
+            BatchSize: 1
+
+  #####################################################################
+  # S3 for the video to hold videos to be analyzed
+  #####################################################################
+  InboundVideoBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'overlay-detect-videos-${AWS::AccountId}'
+      AccessControl: BucketOwnerFullControl
+
+#######################
+# OUTPUTS
+#######################
+Outputs:
+  RekognitionCallerLambda:
+    Value: !Ref RekognitionCallerLambda
+  ResultsProcessorLambda:
+    Value: !Ref ResultsProcessorLambda
+  InboundVideoBucket:
+    Value: !Ref InboundVideoBucket
+    Description: S3 bucket to store videos to analyze
+  SnsTopicArn:
+    Value: !Ref RekognitionDoneTopic
+    Description: SNS topic for Rekognition completion
+  SqsQueueArn:
+    Value: !GetAtt RekognitionDoneQueue.Arn
+    Description: SQS queue for delivery of Rekognition completion message
