@@ -94,11 +94,13 @@ Resources:
     Properties:
       VisibilityTimeout:
         Ref: ProcessingTimeLimit
+      KmsMasterKeyId: alias/aws/sqs
 
   RekognitionDoneTopic:
     Type: AWS::SNS::Topic
     Properties:
        DisplayName: "RekCompleteNotifications"
+       KmsMasterKeyId: alias/aws/sns
 
   QueuePolicy:
     Type: AWS::SQS::QueuePolicy
@@ -193,6 +195,9 @@ Resources:
     Properties:
       BucketName: !Sub 'overlay-detect-videos-${AWS::AccountId}'
       AccessControl: BucketOwnerFullControl
+      VersioningConfiguration:
+        Status: Enabled
+
 
 #######################
 # OUTPUTS
