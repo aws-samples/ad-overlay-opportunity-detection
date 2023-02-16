@@ -15,7 +15,7 @@
 
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: (PACE000002) Infrastructure needed for sample code that finds opportunities for overlay advertisements in video
+Description: (uksb-1tsflhn4m) Infrastructure needed for sample code that finds opportunities for overlay advertisements in video
 
 Globals:
   Function:
@@ -30,7 +30,7 @@ Parameters:
     Description: Number of seconds to allow for processing of results in lambda
     
 Metadata:
-    ID: PACE000002
+    ID: uksb-1tsflhn4m
     Version: 1
     Stack: backend
     
